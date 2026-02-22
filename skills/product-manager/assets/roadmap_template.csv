@@ -1,0 +1,7 @@
+Quarter,Initiative,Feature,Status,Owner,Priority,Dependencies
+Q1,MVP Launch,Authentication,Done,Alice,High,None
+Q1,MVP Launch,User Dashboard,In Progress,Bob,High,Authentication
+Q2,Growth,Referral Program,Backlog,Charlie,Medium,None
+Q2,Growth,Email Marketing Integration,Backlog,Alice,Low,None
+Q3,Enterprise,SSO Integration,Backlog,Dave,High,None
+Q3,Enterprise,Audit Logs,Backlog,Dave,High,SSO
