@@ -81,8 +81,31 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+import firebase_manager
+
 st.title("AutoShift: מערכת שיבוץ משמרות חכמה")
 st.markdown("---")
+
+# --- FIREBASE MANAGER SIDEBAR ---
+with st.sidebar:
+    st.header("💾 גיבוי בענן (Firebase)")
+    st.markdown("האפליקציה שומרת את הנתונים שלך באופן אוטומטי בענן לאחר כל שינוי.")
+    
+    st.markdown("---")
+    st.markdown("#### איפוסי מערכת")
+    if st.button("🗑️ מחק הכל מהענן והתחל מחדש", use_container_width=True):
+        with st.spinner("מוחק נתונים..."):
+            firebase_manager.delete_state_from_firebase()
+            # Clear local session state components
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
+
+# --- AUTO LOAD STATE FROM FIREBASE ---
+if 'firebase_loaded' not in st.session_state:
+    with st.spinner("טוען נתונים מהענן (אם קיימים)..."):
+        firebase_manager.load_state_from_firebase(st.session_state)
+    st.session_state['firebase_loaded'] = True
 
 # --- Session State Initialization ---
 if 'positions' not in st.session_state:
@@ -108,12 +131,16 @@ if uploaded_file:
             st.session_state['employees_df'] = df
             st.session_state['current_file_id'] = file_id
             st.session_state['header_idx'] = header_idx
-    
+
+if st.session_state.get('employees_df') is not None:
     df = st.session_state.get('employees_df')
     header_idx = st.session_state.get('header_idx')
     
     if df is not None:
-        st.success(f"הקובץ נטען בהצלחה! (כותרת זוהתה בשורה {header_idx+1})")
+        if header_idx is not None:
+            st.success(f"נתוני עובדים זמינים לפעולה (זוהתה כותרת בשורה {header_idx+1})")
+        else:
+            st.success("הנתונים נטענו בהצלחה מהענן!")
         
         # --- 1. Identify Columns ---
         cols = df.columns.tolist()
@@ -503,6 +530,19 @@ if uploaded_file:
                         for col in data_dict.keys():
                             col_config[col] = st.column_config.CheckboxColumn(disabled=False)
 
+                        # Apply loaded edits from Firebase (Bypassing Streamlit session_state restrictions)
+                        if 'restored_edits' in st.session_state and f"emp_edit_{idx}" in st.session_state['restored_edits']:
+                            saved_edit_state = st.session_state['restored_edits'][f"emp_edit_{idx}"]
+                            if saved_edit_state and 'edited_rows' in saved_edit_state:
+                                for row_i_str, row_edits in saved_edit_state['edited_rows'].items():
+                                    try:
+                                        row_i = int(row_i_str)
+                                        for col_name, val in row_edits.items():
+                                            if row_i < len(df_display) and col_name in df_display.columns:
+                                                df_display.at[row_i, col_name] = val
+                                    except ValueError:
+                                        pass
+
                         # Data Editor
                         edited_display = st.data_editor(
                             df_display,
@@ -575,21 +615,17 @@ if uploaded_file:
              
         calc_potential_ui = st.checkbox("חשב והצג מועמדים פוטנציאליים לגישור פערים (מאריך את זמן החישוב)", value=False)
         
-        if st.button("התחל שיבוץ אוטומטי (AutoShift)", type="primary"):
+        generate_clicked = st.button("התחל שיבוץ אוטומטי (AutoShift)", type="primary")
+        if generate_clicked:
             with st.spinner("מבצע אופטימיזציה..."):
                 try:
-                    # Collect overrides directly from the loop above
                     current_overrides = collected_overrides
-
-                    # Default shifts if not manually selected
                     shifts_to_use = st.session_state.get('selected_shifts', potential_shifts)
                     col_map_to_use = st.session_state.get('col_map', {"name": name_col, "pos": role_col, "note": None})
                     
-                    # Apply Role Updates to a temporary DF for solving
                     df_solver = st.session_state['employees_df'].copy()
                     if role_col and collected_role_updates:
                         for r_idx, r_list in collected_role_updates.items():
-                            # Join back to CSV string formatted as expected by parser
                             df_solver.at[r_idx, role_col] = ", ".join(r_list)
                     
                     results = scheduler.solve_roster(
@@ -602,8 +638,19 @@ if uploaded_file:
                         pref_weights=collected_pref_weights,
                         calc_potentials=calc_potential_ui
                     )
-                    
-                    if results['roster'] is not None:
+                    st.session_state['latest_roster_results'] = results
+                except Exception as e:
+                    st.error(f"שגיאה בתהליך השיבוץ: {e}")
+
+        # Render saved roster if it exists, matching the inner indentation scope
+        if 'latest_roster_results' in st.session_state:
+            class DummyContext:
+                def __enter__(self): return self
+                def __exit__(self, exc_type, exc_val, exc_tb): pass
+            with DummyContext():
+                try:
+                    results = st.session_state['latest_roster_results']
+                    if results and results.get('roster') is not None:
                         st.success(f"נמצא פתרון! (סטטוס: {results['status']})")
                         
                         # Process Roster for Visualization
@@ -1089,3 +1136,7 @@ if uploaded_file:
 
     else:
         st.error(f"שגיאה בקריאת הקובץ: {header_idx}")
+
+# --- AUTOSAVE ON EVERY CHANGE ---
+if st.session_state.get('firebase_loaded', False):
+    firebase_manager.save_state_to_firebase(st.session_state)
