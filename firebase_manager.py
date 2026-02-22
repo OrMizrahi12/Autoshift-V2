@@ -8,11 +8,19 @@ import json
 def init_firebase():
     if not firebase_admin._apps:
         try:
-            # The JSON key file must be in the same folder, named 'firebase_credentials.json'
-            cred = credentials.Certificate("firebase_credentials.json")
+            # Check if we are in Streamlit Cloud environment (secrets exist)
+            if "firebase" in st.secrets:
+                # Convert taking the Streamlit Secrets dictionary and converting it to a standard dict
+                # because `credentials.Certificate` requires a dict, not a Secrets object
+                cert_dict = dict(st.secrets["firebase"])
+                cred = credentials.Certificate(cert_dict)
+            else:
+                # Fallback to local development
+                cred = credentials.Certificate("firebase_credentials.json")
+                
             firebase_admin.initialize_app(cred)
         except Exception as e:
-            st.sidebar.warning(f"שגיאה בהתחברות ל-Firebase (האם הוספת את קובץ המפתח?): {e}")
+            st.sidebar.warning(f"שגיאה בהתחברות ל-Firebase (האם הוספת את קובץ המפתח למערכת?): {e}")
             return None
     return firestore.client()
 
