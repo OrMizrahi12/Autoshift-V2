@@ -4,6 +4,8 @@ import re
 import io
 from datetime import datetime, timedelta
 import holidays
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # --- 1. פונקציית ניקוי שם עמדה ---
 def clean_location(original_loc):
@@ -66,7 +68,7 @@ def calculate_hours(start_str, end_str):
     except:
         return 0.0
 
-def calculate_shift_pay(shift, wage, is_six_day_week, il_holidays):
+def calculate_shift_pay(shift, wage, il_holidays):
     """
     מבצע חישוב שכר מפורט למשמרת בודדת
     """
@@ -85,38 +87,9 @@ def calculate_shift_pay(shift, wage, is_six_day_week, il_holidays):
     # זיהוי סוג משמרת
     is_hol = is_holiday(date_obj, il_holidays)
     is_wknd = is_weekend(date_obj, start_str)
-    
-    # בדיקת לילה: לפחות שעתיים בין 22:00 ל-06:00
-    is_night = False
-    try:
-        s_h = int(start_str.split(':')[0])
-        e_h = int(end_str.split(':')[0])
-        
-        # לוגיקה פשוטה לזיהוי לילה - אם המשמרת מתחילה בערב ומסתיימת בבוקר
-        # או מתחילה בלילה.
-        # לפי החוק: שעתיים לפחות בין 22:00-06:00
-        # נניח שאם התחילה אחרי 20:00 או הסתיימת לפני 08:00 (והיתה בלילה)
-        # זה תופס את הרוב.
-        # מימוש מדויק יותר ידרוש חיתוך טווחים.
-        # לצורך המשימה:
-        if (s_h >= 22 or s_h <= 4) or (e_h <= 6 and e_h >= 0): 
-             # בדיקה גסה אך יעילה לרוב משמרות האבטחה
-             is_night = True
-        elif s_h < 22 and e_h > 6 and s_h > e_h: # חוצה לילה
-            # בודקים כמה שעות בתוך הטווח
-            # זה מורכב, נלך על הכלל: אם התחילה ב-21:00 וסיימה ב-06:00 -> יש 8 שעות בלילה -> לילה.
-            is_night = True
-            
-    except:
-        pass
 
     # קביעת סף שעות נוספות
-    # יום חול רגיל: 8.6 (8 שעות ו-36 דקות) ל-5 ימים, או 8 ל-6 ימים?
-    # המשתמש ביקש: 8 ל-6 ימים, 9 ל-5 ימים.
-    regular_threshold = 8.0 if is_six_day_week else 9.0
-    
-    if is_night: # משמרת לילה: יום עבודה הוא 7 שעות
-         regular_threshold = 7.0
+    regular_threshold = 8.0
          
     if is_wknd or is_hol: # שבת/חג: אין "שעות רגילות" במובן של 100%, הכל 150% ומעלה
         regular_threshold = 0 # הכל נחשב מיוחד
@@ -145,7 +118,7 @@ def calculate_shift_pay(shift, wage, is_six_day_week, il_holidays):
         # סף לשבת: נקבע לפי יום רגיל (8/9/7)
         # אם שבת בערב מחשיבים 7? לרוב כן. נלך על מחמיר: 8 שעות או 7 אם לילה.
         
-        limit_base = 7.0 if is_night else (8.0 if is_six_day_week else 9.0)
+        limit_base = 8.0
         
         # תיקון לחוק: בשבת הכל 150%. שעות נוספות זה על ה-150%.
         # אז עד limit_base -> 150%
@@ -177,7 +150,7 @@ def calculate_shift_pay(shift, wage, is_six_day_week, il_holidays):
         
         h_150 += rem_hours # כל השאר 150%
         
-        category = "לילה" if is_night else "רגיל"
+        category = "רגיל"
 
     # חישוב כספי
     pay = (h_100 * wage * 1.00) + \
@@ -241,8 +214,9 @@ def parse_schedule_file(uploaded_file, employee_name):
             
         for c in range(1, len(df.columns)):
             cell_val = str(row[c])
+            clean_cell_val = re.sub(r'\s*\(.*?\)', '', cell_val).replace('*', '').strip()
             
-            if employee_name in cell_val:
+            if employee_name in cell_val or employee_name in clean_cell_val:
                 if c not in dates_map:
                     continue 
                 
@@ -283,6 +257,37 @@ def parse_schedule_file(uploaded_file, employee_name):
                 })
 
     return shifts
+
+def extract_employee_ids(uploaded_file):
+    """מחלץ מילון של שם עובד -> ת.ז מתוך קובץ"""
+    try:
+        uploaded_file.seek(0)
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
+            
+        name_col = None
+        id_col = None
+        for col in df.columns:
+            c = str(col).lower()
+            if "שם" in c or "name" in c:
+                name_col = col
+            if "ת.ז" in c or "תז" in c or "זהות" in c or "id" in c:
+                id_col = col
+                
+        if name_col and id_col:
+            mapping = {}
+            for _, row in df.iterrows():
+                name = str(row[name_col]).strip()
+                id_val = str(row[id_col]).strip()
+                if name and str(name) != "nan" and id_val and str(id_val) != "nan":
+                    clean_name = re.sub(r'\s*\(.*?\)', '', name).replace('*', '').strip()
+                    mapping[clean_name] = id_val
+            return mapping
+    except:
+        pass
+    return {}
 
 def extract_all_locations(uploaded_file):
     """מחלץ את כל שמות העמדות מקובץ סידור, ללא תלות בעובד מסוים"""
@@ -362,14 +367,14 @@ def extract_all_employees(uploaded_file):
                 and cell_val not in IGNORE_LOCS
                 and cell_val not in ["בוקר", "צהריים", "לילה"]
             ):
-                # ניקוי סוגריים ותוכנם מהשם
-                clean_name = re.sub(r'\s*\(.*?\)', '', cell_val).strip()
+                # ניקוי סוגריים ותוכנם מהשם, וגם מחיקת כוכביות
+                clean_name = re.sub(r'\s*\(.*?\)', '', cell_val).replace('*', '').strip()
                 if clean_name:
                     employees.add(clean_name)
 
     return employees
 
-def generate_report_for_employee(employee_name, files, month, year, hourly_wage, is_six_day, travel_rate):
+def generate_report_for_employee(employee_name, files, month, year, hourly_wage, travel_rate):
     """מייצר דוח שעות ושכר עבור עובד ספציפי"""
     all_shifts = []
     for file in files:
@@ -474,7 +479,7 @@ def generate_report_for_employee(employee_name, files, month, year, hourly_wage,
 
                 row_data = final_rows[-1]
 
-                pay_data = calculate_shift_pay(shift, hourly_wage, is_six_day, il_holidays)
+                pay_data = calculate_shift_pay(shift, hourly_wage, il_holidays)
 
                 row_data.update({
                     "סהמ שעות": round(pay_data["hours_100"] + pay_data["hours_125"] + pay_data["hours_150"] + pay_data["hours_175"] + pay_data["hours_200"], 2),
@@ -502,14 +507,10 @@ def main():
         st.header("הגדרות חיפוש")
         files = st.file_uploader("העלה קבצי סידור (CSV/Excel)", accept_multiple_files=True, type=['csv', 'xlsx'])
         
-        # תוספת חדשה: קלט לתעריף נסיעות
-        travel_rate = st.number_input("תעריף נסיעות יומי (₪)", min_value=0.0, value=0.0, step=0.5)
+        id_file = st.file_uploader("העלה קובץ מספרי תעודת זהות (אופציונלי)", type=['csv', 'xlsx'])
         
         st.markdown("---")
-        st.subheader("פרטי שכר")
-        hourly_wage = st.number_input("שכר שעתי (₪)", min_value=29.0, value=32.0, step=0.5)
-        work_week_type = st.radio("סוג שבוע עבודה:", ["5 ימים (9 שעות ביום)", "6 ימים (8 שעות ביום)"])
-        is_six_day = "6" in work_week_type
+        st.subheader("תאריך הדוח")
         
         current_year = 2026
         current_month = 1
@@ -519,7 +520,15 @@ def main():
         with col2:
             year = st.number_input("שנה", min_value=2020, max_value=2030, value=current_year)
 
-    # --- שלב 1: חילוץ שמות עובדים מהקבצים ---
+    # --- שלב 1: חילוץ שמות עובדים ותעודות זהות מהקבצים ---
+    employee_ids_map = {}
+    if id_file:
+        employee_ids_map = extract_employee_ids(id_file)
+        if employee_ids_map:
+            st.sidebar.success(f"נטענו {len(employee_ids_map)} מספרי ת.ז")
+        else:
+            st.sidebar.warning("לא זוהו עמודות שם ות.ז בקובץ זה")
+
     if files:
         # חילוץ כל העמדות וכל העובדים
         all_locations = set()
@@ -541,63 +550,92 @@ def main():
         
         st.markdown("---")
         
-        # --- שלב 2: בחירת עובדים ---
-        st.subheader("👥 בחירת עובדים להפקת דוח")
-        
-        # שורת חיפוש עובדים
-        search_query = st.text_input("🔍 חיפוש עובד לפי שם", placeholder="הקלד שם לחיפוש...")
-        
-        # סינון העובדים לפי שורת החיפוש
-        if search_query:
-            filtered_employees = [emp for emp in all_employees_sorted if search_query in emp]
-        else:
-            filtered_employees = all_employees_sorted
-        
-        st.caption(f"מציג {len(filtered_employees)} מתוך {len(all_employees_sorted)} עובדים")
-        
-        # כפתורי עזר לבחירה מהירה
-        col_sel1, col_sel2 = st.columns(2)
-        with col_sel1:
-            select_all = st.button("✅ בחר הכל")
-        with col_sel2:
-            deselect_all = st.button("❌ נקה הכל")
-        
-        # יצירת checkboxes לכל עובד
-        selected_employees = []
-        
-        # חלוקה ל-3 עמודות לתצוגה נוחה
-        num_cols = 3
-        cols = st.columns(num_cols)
-        
-        for idx, emp in enumerate(filtered_employees):
-            col_idx = idx % num_cols
-            with cols[col_idx]:
-                default_val = True if select_all else False
-                if st.checkbox(emp, key=f"emp_{emp}", value=default_val):
-                    selected_employees.append(emp)
+        if "wage_groups" not in st.session_state:
+            st.session_state.wage_groups = {
+                "ברירת מחדל": {"wage": 32.0, "travel": 0.0, "employees": []}
+            }
+
+        # --- שלב 2: יצירת ושיוך לקבוצות תנאים ---
+        st.subheader("💼 ניהול קבוצות שכר ושיוך עובדים")
+        st.caption("יצירת קבוצות תנאים ושיוך עובדים לכל סט (שכר שעתי, החזר נסיעות)")
+
+        # הוספת קבוצה חדשה
+        with st.expander("➕ הוספת קבוצת שכר חדשה", expanded=False):
+            col_g1, col_g2, col_g3 = st.columns([2, 1, 1])
+            new_g_name = col_g1.text_input("שם הקבוצה (למשל: אחמ\"שים)")
+            new_g_wage = col_g2.number_input("שכר שעתי", min_value=29.0, value=32.0, step=0.5, key="new_g_wage")
+            new_g_travel = col_g3.number_input("נסיעות יומי", min_value=0.0, value=0.0, step=0.5, key="new_g_travel")
+            if st.button("הוסף קבוצה"):
+                if new_g_name and new_g_name not in st.session_state.wage_groups:
+                    st.session_state.wage_groups[new_g_name] = {"wage": new_g_wage, "travel": new_g_travel, "employees": []}
+                    st.success(f"קבוצה '{new_g_name}' נוספה!")
+                    st.rerun()
+                elif new_g_name in st.session_state.wage_groups:
+                    st.warning("שם קבוצה זה כבר קיים.")
         
         st.markdown("---")
         
-        # כפתור הפקת דוחות
-        if selected_employees:
-            st.info(f"נבחרו {len(selected_employees)} עובדים להפקת דוח")
-            process_btn = st.button("🚀 הפק דוחות לעובדים שנבחרו")
+        # UI לכל קבוצה קיימת
+        for g_name in list(st.session_state.wage_groups.keys()):
+            with st.container():
+                st.markdown(f"**קבוצה: {g_name}**")
+                col_w, col_t, col_del = st.columns([1.5, 1.5, 1])
+                new_wage = col_w.number_input("שכר שעתי", min_value=0.0, value=float(st.session_state.wage_groups[g_name]["wage"]), step=0.5, key=f"w_{g_name}")
+                new_travel = col_t.number_input("נסיעות יומי", min_value=0.0, value=float(st.session_state.wage_groups[g_name]["travel"]), step=0.5, key=f"t_{g_name}")
+                
+                 # עדכון ערכים בזמן אמת
+                st.session_state.wage_groups[g_name]["wage"] = new_wage
+                st.session_state.wage_groups[g_name]["travel"] = new_travel
+                
+                if g_name != "ברירת מחדל":
+                     # יישור הכפתור מחיקה לשורה למטה
+                     st.write("") # מרווח קטן
+                     if col_del.button("🗑️ מחק קבוצה", key=f"del_{g_name}"):
+                         del st.session_state.wage_groups[g_name]
+                         st.rerun()
+                
+                # בחירת עובדים לקבוצה
+                options = sorted(list(set(all_employees_sorted) | set(st.session_state.wage_groups[g_name]["employees"])))
+                selected_emps = st.multiselect(
+                    "שייך עובדים:", 
+                    options=options, 
+                    default=[e for e in st.session_state.wage_groups[g_name]["employees"] if e in options], 
+                    key=f"emps_{g_name}",
+                    placeholder="בחר עובדים מתוך הרשימה..."
+                )
+                st.session_state.wage_groups[g_name]["employees"] = selected_emps
+                st.markdown("---")
+        
+        # איסוף כל העובדים שנבחרו על מנת להפיק דוחות
+        employees_to_process = []
+        emp_to_group = {}
+        for g_name, g_data in st.session_state.wage_groups.items():
+            for emp in g_data["employees"]:
+                # אם עובד נבחר בכמה קבוצות, הקבוצה האחרונה תדרוס את קודמתה
+                if emp not in employees_to_process:
+                    employees_to_process.append(emp)
+                emp_to_group[emp] = {"wage": g_data["wage"], "travel": g_data["travel"]}
+                
+        if employees_to_process:
+            st.info(f"סה\"כ {len(employees_to_process)} עובדים שויכו ומוכנים להפקת דוח.")
+            process_btn = st.button("🚀 הפק דוחות לעובדים ששויכו", type="primary")
         else:
-            st.warning("סמן לפחות עובד אחד כדי להפיק דוח")
+            st.warning("שייך לפחות עובד אחד לאחת מהקבוצות כדי להפיק דוחות.")
             process_btn = False
         
         # --- שלב 3: הפקת דוחות ---
-        if process_btn and selected_employees:
+        if process_btn and employees_to_process:
             progress_bar = st.progress(0)
             
             all_excel_sheets = {}
             
-            for emp_idx, emp_name in enumerate(selected_employees):
+            for emp_idx, emp_name in enumerate(employees_to_process):
+                g_data = emp_to_group[emp_name]
                 df_final, processed_shifts, total_salary = generate_report_for_employee(
-                    emp_name, files, month, year, hourly_wage, is_six_day, travel_rate
+                    emp_name, files, month, year, g_data["wage"], g_data["travel"]
                 )
                 
-                progress_bar.progress((emp_idx + 1) / len(selected_employees))
+                progress_bar.progress((emp_idx + 1) / len(employees_to_process))
                 
                 # דוח לכל עובד
                 st.markdown(f"## 📋 דוח עבור: **{emp_name}**")
@@ -634,12 +672,24 @@ def main():
                         "שכר יומי": round(total_salary, 2),
                         "סוג יום": "💰 סה\"כ לתשלום"
                     }
-                    df_display = pd.concat([df_final, pd.DataFrame([summary_row])], ignore_index=True)
+                    
+                    df_display = df_final.copy()
+                    
+                    # הוספת ת.ז אם קיים
+                    emp_id = employee_ids_map.get(emp_name, "")
+                    if emp_id:
+                        id_row = {col: "" for col in df_final.columns}
+                        id_row["תאריך"] = "תעודת זהות:"
+                        id_row["יום בשבוע"] = None
+                        id_row["יום שם"] = emp_id
+                        df_display = pd.concat([pd.DataFrame([id_row]), df_display], ignore_index=True)
+                    
+                    df_display = pd.concat([df_display, pd.DataFrame([summary_row])], ignore_index=True)
                     
                     st.dataframe(df_display, use_container_width=True)
                 
                 # שמירה לאקסל
-                all_excel_sheets[emp_name] = df_final
+                all_excel_sheets[emp_name] = df_display
                 
                 st.markdown("---")
             
@@ -650,6 +700,73 @@ def main():
                     # שם הגיליון מוגבל ל-31 תווים באקסל, ואסור שיכיל תווים מיוחדים
                     sheet_name = re.sub(r'[\\/*?:\[\]]', '', emp_name)[:31]
                     df.to_excel(writer, index=False, sheet_name=sheet_name)
+                    
+                    # --- Excel Styling ---
+                    worksheet = writer.sheets[sheet_name]
+                    worksheet.sheet_view.rightToLeft = True
+                    
+                    # Define Styles
+                    header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
+                    header_font = Font(bold=True, color="FFFFFF")
+                    summary_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+                    summary_font = Font(bold=True)
+                    id_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+                    id_font = Font(bold=True, color="375623")
+                    
+                    thin_border = Border(
+                        left=Side(style='thin', color='BFBFBF'),
+                        right=Side(style='thin', color='BFBFBF'),
+                        top=Side(style='thin', color='BFBFBF'),
+                        bottom=Side(style='thin', color='BFBFBF')
+                    )
+                    center_align = Alignment(horizontal="center", vertical="center")
+                    
+                    # Style Header Row
+                    for cell in worksheet[1]:
+                        cell.fill = header_fill
+                        cell.font = header_font
+                        cell.alignment = center_align
+                        cell.border = thin_border
+                        
+                    # Find total rows and max columns
+                    max_row = worksheet.max_row
+                    max_col = worksheet.max_column
+                    
+                    # Format Data cells
+                    for row_idx in range(2, max_row + 1):
+                        is_id_row = False
+                        is_summary_row = False
+                        
+                        header_val = str(worksheet.cell(row=row_idx, column=1).value or "")
+                        if header_val == "תעודת זהות:":
+                            is_id_row = True
+                        elif header_val == "סה\"כ":
+                            is_summary_row = True
+                            
+                        for col_idx in range(1, max_col + 1):
+                            cell = worksheet.cell(row=row_idx, column=col_idx)
+                            cell.border = thin_border
+                            cell.alignment = center_align
+                            
+                            if is_id_row:
+                                cell.fill = id_fill
+                                cell.font = id_font
+                            elif is_summary_row:
+                                cell.fill = summary_fill
+                                cell.font = summary_font
+                                
+                    # Auto-adjust column width
+                    for col_idx in range(1, max_col + 1):
+                        max_length = 0
+                        col_letter = get_column_letter(col_idx)
+                        for cell in worksheet[col_letter]:
+                            try:
+                                if len(str(cell.value)) > max_length:
+                                    max_length = len(str(cell.value))
+                            except:
+                                pass
+                        adjusted_width = (max_length + 2)
+                        worksheet.column_dimensions[col_letter].width = adjusted_width
             
             st.download_button(
                 label="📥 הורד את כל הדוחות (Excel)",
