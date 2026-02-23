@@ -3,3 +3,5 @@ pandas
 openpyxl
 firebase-admin
 ortools
+PyMuPDF
+holidays
