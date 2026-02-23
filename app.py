@@ -73,10 +73,23 @@ st.markdown("""
     }
     /* Ensure checkbox icon stays aligned correctly if needed, usually 'direction: rtl' handles it */
     
-    /* Sidebar */
+    /* === Sidebar Collapse RTL Fix === */
+    /* Force the main sidebar outline to LTR for calculation width */
     [data-testid="stSidebar"] {
-        direction: rtl;
-        text-align: right;
+        direction: ltr !important;
+        overflow: hidden !important;
+    }
+    
+    /* Force inner content back to expected RTL */
+    [data-testid="stSidebarUserContent"] {
+        direction: rtl !important;
+        text-align: right !important;
+        /* Don't allow words to break onto 1 char wide lines when collapsed */
+        white-space: nowrap !important;
+    }
+    
+    [data-testid="stSidebarUserContent"] * {
+        white-space: normal; /* Restore for normal paragraphs inside */
     }
 </style>
 """, unsafe_allow_html=True)
