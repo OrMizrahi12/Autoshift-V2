@@ -1,0 +1,100 @@
+/* Global RTL Direction */
+.stApp {
+    direction: rtl;
+    text-align: right;
+}
+
+/* Text Alignment for all standard elements */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+div,
+span,
+label {
+    text-align: right !important;
+}
+
+/* Input Widgets: Labels & Text */
+.stTextInput>label,
+.stNumberInput>label,
+.stSelectbox>label,
+.stMultiSelect>label,
+.stTextArea>label {
+    text-align: right !important;
+    width: 100%;
+    direction: rtl;
+}
+
+/* Input Fields Content */
+.stTextInput input,
+.stNumberInput input,
+.stSelectbox div[data-baseweb="select"] {
+    direction: rtl;
+    text-align: right;
+}
+
+/* Containers & Columns */
+[data-testid="column"] {
+    text-align: right;
+    direction: rtl;
+}
+
+/* Expander */
+.streamlit-expanderHeader {
+    direction: rtl;
+    text-align: right;
+}
+
+/* Tables/Dataframes */
+.stDataFrame,
+[data-testid="stDataFrame"] {
+    direction: rtl !important;
+    text-align: right !important;
+}
+
+thead tr th {
+    text-align: right !important;
+    direction: rtl;
+}
+
+tbody tr td {
+    text-align: right !important;
+    direction: rtl;
+}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] {
+    justify-content: flex-end;
+}
+
+/* Checkboxes */
+.stCheckbox {
+    direction: rtl;
+    text-align: right;
+}
+
+/* Ensure checkbox icon stays aligned correctly if needed, usually 'direction: rtl' handles it */
+
+/* === Sidebar Collapse RTL Fix === */
+/* Force the main sidebar outline to LTR for calculation width */
+[data-testid="stSidebar"] {
+    direction: ltr !important;
+    overflow: hidden !important;
+}
+
+/* Force inner content back to expected RTL */
+[data-testid="stSidebarUserContent"] {
+    direction: rtl !important;
+    text-align: right !important;
+    /* Don't allow words to break onto 1 char wide lines when collapsed */
+    white-space: nowrap !important;
+}
+
+[data-testid="stSidebarUserContent"] * {
+    white-space: normal;
+    /* Restore for normal paragraphs inside */
+}

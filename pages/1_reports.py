@@ -8,6 +8,13 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
 from email.mime.text import MIMEText
 import time
+import os
+
+def load_css():
+    css_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "style.css")
+    if os.path.exists(css_path):
+        with open(css_path, "r", encoding="utf-8") as f:
+            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 def find_and_render_page(uploaded_file, search_term):
     """מחפש דפים ב-PDF לפי מונח חיפוש ומחזיר תמונות."""
@@ -423,6 +430,7 @@ def tab_bulk_send(uploaded_pdf, smtp_server, smtp_port, sender_email, sender_pas
 
 def main():
     st.set_page_config(page_title="מערכת דוחות שעות", page_icon="📸", layout="centered")
+    load_css()
 
     st.title("📸 מערכת דוחות שעות")
 

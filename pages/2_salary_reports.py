@@ -6,6 +6,13 @@ from datetime import datetime, timedelta
 import holidays
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+import os
+
+def load_css():
+    css_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "style.css")
+    if os.path.exists(css_path):
+        with open(css_path, "r", encoding="utf-8") as f:
+            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 # --- 1. פונקציית ניקוי שם עמדה ---
 def clean_location(original_loc):
@@ -500,8 +507,9 @@ def generate_report_for_employee(employee_name, files, month, year, hourly_wage,
 # --- 5. הממשק הראשי ---
 def main():
     st.set_page_config(page_title="מערכת סידור עבודה חכם", layout="wide", page_icon="📅")
+    load_css()
     
-    st.title("👮♂ מחולל דוחות שעות - אבטחה")
+    st.title("👮‍♂️ מחולל דוחות שעות - אבטחה")
     
     with st.sidebar:
         st.header("הגדרות חיפוש")

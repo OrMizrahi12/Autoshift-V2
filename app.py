@@ -8,116 +8,67 @@ from excel_exporter import generate_styled_excel
 
 st.set_page_config(page_title="AutoShift - שיבוץ משמרות אוטומטי", layout="wide", initial_sidebar_state="expanded")
 
-# --- CSS for RTL Support ---
-st.markdown("""
-<style>
-    /* Global RTL Direction */
-    .stApp {
-        direction: rtl;
-        text-align: right;
-    }
-    
-    /* Text Alignment for all standard elements */
-    h1, h2, h3, h4, h5, h6, p, div, span, label {
-        text-align: right !important;
-    }
+def load_css():
+    with open("style.css", "r", encoding="utf-8") as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-    /* Input Widgets: Labels & Text */
-    .stTextInput > label, .stNumberInput > label, .stSelectbox > label, .stMultiSelect > label, .stTextArea > label {
-        text-align: right !important;
-        width: 100%;
-        direction: rtl;
-    }
-    
-    /* Input Fields Content */
-    .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] {
-        direction: rtl;
-        text-align: right;
-    }
-
-    /* Containers & Columns */
-    [data-testid="column"] {
-        text-align: right;
-        direction: rtl;
-    }
-    
-    /* Expander */
-    .streamlit-expanderHeader {
-        direction: rtl; 
-        text-align: right;
-    }
-    
-    /* Tables/Dataframes */
-    .stDataFrame, [data-testid="stDataFrame"] {
-        direction: rtl !important;
-        text-align: right !important;
-    }
-    thead tr th {
-        text-align: right !important;
-        direction: rtl;
-    }
-    tbody tr td {
-        text-align: right !important;
-        direction: rtl;
-    }
-    
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] {
-        justify-content: flex-end;
-    }
-    
-    /* Checkboxes */
-    .stCheckbox {
-        direction: rtl;
-        text-align: right;
-    }
-    /* Ensure checkbox icon stays aligned correctly if needed, usually 'direction: rtl' handles it */
-    
-    /* === Sidebar Collapse RTL Fix === */
-    /* Force the main sidebar outline to LTR for calculation width */
-    [data-testid="stSidebar"] {
-        direction: ltr !important;
-        overflow: hidden !important;
-    }
-    
-    /* Force inner content back to expected RTL */
-    [data-testid="stSidebarUserContent"] {
-        direction: rtl !important;
-        text-align: right !important;
-        /* Don't allow words to break onto 1 char wide lines when collapsed */
-        white-space: nowrap !important;
-    }
-    
-    [data-testid="stSidebarUserContent"] * {
-        white-space: normal; /* Restore for normal paragraphs inside */
-    }
-</style>
-""", unsafe_allow_html=True)
+load_css()
 
 import firebase_manager
 
 st.title("AutoShift: מערכת שיבוץ משמרות חכמה")
 st.markdown("---")
 
+# --- LOGIN SYSTEM ---
+if 'user_email' not in st.session_state:
+    st.session_state['user_email'] = None
+
+if not st.session_state['user_email']:
+    st.markdown("## התחברות למערכת 🔐")
+    st.info("אנא הזן את כתובת המייל הארגונית/אישית שלך. המערכת תשמור את נתוני השיבוץ שלך באופן פרטי ומאובטח בענן תחת כתובת זו.")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        with st.form("login_form"):
+            email_input = st.text_input("כתובת אימייל (Google / אחר):", placeholder="example@gmail.com")
+            submit = st.form_submit_button("התחבר", type="primary", use_container_width=True)
+            
+            if submit:
+                if email_input and "@" in email_input and "." in email_input:
+                    st.session_state['user_email'] = email_input.strip().lower()
+                    st.rerun()
+                else:
+                    st.error("אנא הזן כתובת אימייל תקינה.")
+    st.stop() # עצור את המשך טעינת האפליקציה עד להתחברות
+
 # --- FIREBASE MANAGER SIDEBAR ---
 with st.sidebar:
-    st.header("💾 גיבוי בענן (Firebase)")
-    st.markdown("האפליקציה שומרת את הנתונים שלך באופן אוטומטי בענן לאחר כל שינוי.")
-    
+    st.header("👤 פרופיל משתמש")
+    st.success(f"מחובר כ:\n**{st.session_state['user_email']}**")
+    if st.button("🚪 התנתק", use_container_width=True):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+        
     st.markdown("---")
+    st.header("💾 גיבוי בענן (Firebase)")
+    st.markdown("האפליקציה שומרת את הנתונים שלך באופן פרטי ואוטומטי בענן לאחר כל שינוי.")
+    
     st.markdown("#### איפוסי מערכת")
     if st.button("🗑️ מחק הכל מהענן והתחל מחדש", use_container_width=True):
         with st.spinner("מוחק נתונים..."):
-            firebase_manager.delete_state_from_firebase()
-            # Clear local session state components
+            firebase_manager.delete_state_from_firebase(st.session_state['user_email'])
+            # Clear local session state components but keep email
+            email = st.session_state['user_email']
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
+            st.session_state['user_email'] = email
             st.rerun()
 
 # --- AUTO LOAD STATE FROM FIREBASE ---
 if 'firebase_loaded' not in st.session_state:
     with st.spinner("טוען נתונים מהענן (אם קיימים)..."):
-        firebase_manager.load_state_from_firebase(st.session_state)
+        firebase_manager.load_state_from_firebase(st.session_state, st.session_state['user_email'])
     st.session_state['firebase_loaded'] = True
 
 # --- Session State Initialization ---
@@ -278,7 +229,7 @@ if st.session_state.get('employees_df') is not None:
                 chk_col, name_col_ui, del_col = st.columns([0.5, 5.5, 0.8])
                 with chk_col:
                     st.checkbox(
-                        "", 
+                        label=f"בחר עמדה {pos['name']}", 
                         key=f"pos_chk_{pid}", # Using ID for key
                         label_visibility="collapsed"
                     )
@@ -476,7 +427,8 @@ if st.session_state.get('employees_df') is not None:
                 emp_chk_col, emp_exp_col = st.columns([0.5, 6.5])
                 with emp_chk_col:
                     st.session_state[f"emp_chk_{idx}"] = st.checkbox(
-                        "", value=st.session_state.get(f"emp_chk_{idx}", False),
+                        label=f"בחר את {emp_name}", 
+                        value=st.session_state.get(f"emp_chk_{idx}", False),
                         key=f"emp_chk_widget_{idx}",
                         label_visibility="collapsed"
                     )
@@ -536,25 +488,31 @@ if st.session_state.get('employees_df') is not None:
                         new_order = day_cols_reversed + ['סוג משמרת']
                         df_display = df_display[new_order]
 
+                        # Ensure stable base from Firebase is applied BEFORE data_editor ONCE
+                        if 'firebase_constraints_base' in st.session_state and str(idx) in st.session_state['firebase_constraints_base']:
+                            loaded_df = st.session_state['firebase_constraints_base'][str(idx)]
+                            # Only merge boolean columns that exist in both gracefully (for new days added)
+                            for col in loaded_df.columns:
+                                if col in df_display.columns and col != 'סוג משמרת':
+                                    df_display[col] = loaded_df[col]
+
+                        # Re-apply auto_doubles logic AFTER merging the saved state
+                        if auto_doubles:
+                            for col in day_cols:
+                                is_m = df_display.loc[df_display['סוג משמרת'] == ROW_LABELS["morning"], col].values[0]
+                                is_n = df_display.loc[df_display['סוג משמרת'] == ROW_LABELS["night"], col].values[0]
+                                
+                                if is_m:
+                                    df_display.loc[df_display['סוג משמרת'] == ROW_LABELS["double_m"], col] = True
+                                if is_n:
+                                    df_display.loc[df_display['סוג משמרת'] == ROW_LABELS["double_n"], col] = True
+
                         # Config
                         col_config = {
                             "סוג משמרת": st.column_config.TextColumn("סוג משמרת", disabled=True)
                         }
                         for col in data_dict.keys():
                             col_config[col] = st.column_config.CheckboxColumn(disabled=False)
-
-                        # Apply loaded edits from Firebase (Bypassing Streamlit session_state restrictions)
-                        if 'restored_edits' in st.session_state and f"emp_edit_{idx}" in st.session_state['restored_edits']:
-                            saved_edit_state = st.session_state['restored_edits'][f"emp_edit_{idx}"]
-                            if saved_edit_state and 'edited_rows' in saved_edit_state:
-                                for row_i_str, row_edits in saved_edit_state['edited_rows'].items():
-                                    try:
-                                        row_i = int(row_i_str)
-                                        for col_name, val in row_edits.items():
-                                            if row_i < len(df_display) and col_name in df_display.columns:
-                                                df_display.at[row_i, col_name] = val
-                                    except ValueError:
-                                        pass
 
                         # Data Editor
                         edited_display = st.data_editor(
@@ -565,6 +523,10 @@ if st.session_state.get('employees_df') is not None:
                             use_container_width=True,
                             hide_index=True
                         )
+                        
+                        if 'current_edited_displays' not in st.session_state:
+                            st.session_state['current_edited_displays'] = {}
+                        st.session_state['current_edited_displays'][str(idx)] = edited_display
 
                         # Store back in format expected by scheduler
                         collected_overrides[idx] = edited_display.set_index("סוג משמרת")
@@ -940,12 +902,13 @@ if st.session_state.get('employees_df') is not None:
                                 ename = row[name_col]
                                 
                                 # Access override if exists
-                                ov_data = current_overrides.get(idx)
+                                ov_data = collected_overrides.get(idx)
                                 
                                 # Count 'True's in availability (M, A, N, M_double, N_double)
                                 total_marked = 0
+                                shifts_to_use_dashboard = st.session_state.get('selected_shifts', potential_shifts)
                                 
-                                for s_col in shifts_to_use:
+                                for s_col in shifts_to_use_dashboard:
                                     clean_d = str(s_col).strip()
                                     
                                     # Check Override
@@ -1151,5 +1114,5 @@ if st.session_state.get('employees_df') is not None:
         st.error(f"שגיאה בקריאת הקובץ: {header_idx}")
 
 # --- AUTOSAVE ON EVERY CHANGE ---
-if st.session_state.get('firebase_loaded', False):
-    firebase_manager.save_state_to_firebase(st.session_state)
+if st.session_state.get('firebase_loaded', False) and st.session_state.get('user_email'):
+    firebase_manager.save_state_to_firebase(st.session_state, st.session_state['user_email'])
