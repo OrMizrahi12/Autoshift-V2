@@ -1,7 +1,7 @@
 from ortools.sat.python import cp_model
 import pandas as pd
 
-def solve_roster(employees_df, positions, constraints, col_map, shifts, avail_overrides=None, pref_weights=None, calc_potentials=False):
+def solve_roster(employees_df, positions, constraints, col_map, shifts, avail_overrides=None, pref_weights=None, max_shifts_map=None, fixed_shifts_map=None, calc_potentials=False):
     """
     Main solver function with updated Double Shift logic.
     Double Morning (DM): 07:00-19:00 (Covers M + First half A)
@@ -84,7 +84,9 @@ def solve_roster(employees_df, positions, constraints, col_map, shifts, avail_ov
             'name': name,
             'pos': str(pos), 
             'avail': avail,
-            'avail_from_override': avail_from_override  # which days were manually set
+            'avail_from_override': avail_from_override,  # which days were manually set
+            'max_shifts': max_shifts_map.get(idx, 6) if max_shifts_map else 6,
+            'fixed_shifts': fixed_shifts_map.get(idx, []) if fixed_shifts_map else []
         })
     
     # Handle case with no employees
@@ -104,6 +106,16 @@ def solve_roster(employees_df, positions, constraints, col_map, shifts, avail_ov
         req_m = pos_data['guards_morning']
         req_a = pos_data['guards_afternoon']
         req_n = pos_data['guards_night']
+        
+        pos_priority = pos_data.get('priority', 5)  # 1=most important
+        pm_priority  = pos_data.get('priority_morning', 1)
+        pa_priority  = pos_data.get('priority_afternoon', 1)
+        pn_priority  = pos_data.get('priority_night', 1)
+
+        BASE_PENALTY = 10000
+        def _w(pos_p, shift_p):
+            """Convert 1-based priority to integer penalty weight."""
+            return max(1, int(BASE_PENALTY / (pos_p * shift_p)))
         
         for d in shifts:
             # vars for this pos/day by shift type
@@ -133,26 +145,42 @@ def solve_roster(employees_df, positions, constraints, col_map, shifts, avail_ov
                     elif any(norm_pos_name in r or r in norm_pos_name for r in emp_roles):
                         is_qualified = True
                 
-                if not is_qualified:
+                # Fixed Shift override: If this (e, p, d, s) is a fixed shift, we MUST consider them qualified.
+                emp_fixed_shifts = e.get('fixed_shifts', [])
+                is_fixed_any_shift = any(f['day'] == d and f['pos_name'] == pos_name for f in emp_fixed_shifts)
+                
+                if not is_qualified and not is_fixed_any_shift:
                     continue
                 
                 day_av = e['avail'].get(d, [])
                 
                 # Single Shifts
-                if 'M' in day_av:
+                # Check if this shift is active for this position on this day
+                active_map = pos_data.get('active_shifts', {}).get(d, {'M': True, 'A': True, 'N': True})
+                
+                if ('M' in day_av and active_map.get('M', True)) or any(f['day'] == d and f['shift'] == 'M' and f['pos_name'] == pos_name for f in emp_fixed_shifts):
                     v = model.NewBoolVar(f"x_{e['id']}_{p_idx}_{d}_M")
                     assignments[(e['id'], p_idx, d, 'M')] = v
                     pos_day_vars['M'].append(v)
+                    # Force assign if fixed
+                    if any(f['day'] == d and f['shift'] == 'M' and f['pos_name'] == pos_name for f in emp_fixed_shifts):
+                        model.Add(v == 1)
                 
-                if 'A' in day_av:
+                if ('A' in day_av and active_map.get('A', True)) or any(f['day'] == d and f['shift'] == 'A' and f['pos_name'] == pos_name for f in emp_fixed_shifts):
                     v = model.NewBoolVar(f"x_{e['id']}_{p_idx}_{d}_A")
                     assignments[(e['id'], p_idx, d, 'A')] = v
                     pos_day_vars['A'].append(v)
+                    # Force assign if fixed
+                    if any(f['day'] == d and f['shift'] == 'A' and f['pos_name'] == pos_name for f in emp_fixed_shifts):
+                        model.Add(v == 1)
                 
-                if 'N' in day_av:
+                if ('N' in day_av and active_map.get('N', True)) or any(f['day'] == d and f['shift'] == 'N' and f['pos_name'] == pos_name for f in emp_fixed_shifts):
                     v = model.NewBoolVar(f"x_{e['id']}_{p_idx}_{d}_N")
                     assignments[(e['id'], p_idx, d, 'N')] = v
                     pos_day_vars['N'].append(v)
+                    # Force assign if fixed
+                    if any(f['day'] == d and f['shift'] == 'N' and f['pos_name'] == pos_name for f in emp_fixed_shifts):
+                        model.Add(v == 1)
                 
                 # Double Shifts
                 # Rule: auto_doubles only kicks in when the day was NOT manually overridden by the user.
@@ -161,10 +189,10 @@ def solve_roster(employees_df, positions, constraints, col_map, shifts, avail_ov
 
                 can_do_dm = 'Can_DM' in day_av
                 if not day_was_overridden and constraints.get('auto_doubles', False) and 'M' in day_av:
-                    # No manual override for this day → safe to apply global auto_doubles rule
+                    # Apply global auto_doubles rule if enabled (only for new/non-overridden days)
                     can_do_dm = True
 
-                if constraints['allow_double'] and can_do_dm:
+                if constraints['allow_double'] and can_do_dm and active_map.get('M', True) and active_map.get('A', True):
                     v = model.NewBoolVar(f"x_{e['id']}_{p_idx}_{d}_DM")
                     assignments[(e['id'], p_idx, d, 'DM')] = v
                     pos_day_vars['DM'].append(v)
@@ -172,42 +200,27 @@ def solve_roster(employees_df, positions, constraints, col_map, shifts, avail_ov
                 
                 can_do_dn = 'Can_DN' in day_av
                 if not day_was_overridden and constraints.get('auto_doubles', False) and 'N' in day_av:
-                    # No manual override for this day → safe to apply global auto_doubles rule
+                    # Apply global auto_doubles rule if enabled (only for new/non-overridden days)
                     can_do_dn = True
 
-                if constraints['allow_double'] and can_do_dn:
+                if constraints['allow_double'] and can_do_dn and active_map.get('A', True) and active_map.get('N', True):
                     v = model.NewBoolVar(f"x_{e['id']}_{p_idx}_{d}_DN")
                     assignments[(e['id'], p_idx, d, 'DN')] = v
                     pos_day_vars['DN'].append(v)
                     all_double_shifts.append(v)
             
             # Coverage Constraints with Slack (Priority-weighted Soft Constraints)
-            # Penalty is scaled by position priority and shift priority.
-            # Priority 1 (most important) -> highest penalty -> solver fills it first.
-            # Formula: base * pos_weight * shift_weight
-            # pos_weight  = 1/pos_priority  (priority 1 -> weight=1.0, priority 5 -> weight=0.2)
-            # shift_weight = 1/shift_priority
-            BASE_PENALTY = 10000
-            pos_priority = pos_data.get('priority', 5)  # 1=most important
-            pm_priority  = pos_data.get('priority_morning', 1)
-            pa_priority  = pos_data.get('priority_afternoon', 1)
-            pn_priority  = pos_data.get('priority_night', 1)
-
-            def _w(pos_p, shift_p):
-                """Convert 1-based priority to integer penalty weight.
-                Lower number = more important = higher penalty.
-                We invert: weight = BASE / (pos_p * shift_p)
-                Then round to int for CP-SAT (integer coefficients required)."""
-                return max(1, int(BASE_PENALTY / (pos_p * shift_p)))
+            # Penalties are only added if the shift is ACTIVE for this position today
+            active_map = pos_data.get('active_shifts', {}).get(d, {'M': True, 'A': True, 'N': True})
 
             # Morning
-            if req_m > 0:
+            if req_m > 0 and active_map.get('M', True):
                 slack_m = model.NewIntVar(0, req_m, f"slack_{p_idx}_{d}_M")
                 model.Add(sum(pos_day_vars['M'] + pos_day_vars['DM']) + slack_m == req_m)
                 slacks.append((f"{d}|{pos_name}|בוקר", slack_m, _w(pos_priority, pm_priority)))
             
             # Afternoon
-            if req_a > 0:
+            if req_a > 0 and active_map.get('A', True):
                 slack_a1 = model.NewIntVar(0, req_a, f"slack_{p_idx}_{d}_A1")
                 model.Add(sum(pos_day_vars['A'] + pos_day_vars['DM']) + slack_a1 == req_a)
                 slacks.append((f"{d}|{pos_name}|צהריים (15:00-19:00)", slack_a1, _w(pos_priority, pa_priority)))
@@ -217,7 +230,7 @@ def solve_roster(employees_df, positions, constraints, col_map, shifts, avail_ov
                 slacks.append((f"{d}|{pos_name}|צהריים (19:00-23:00)", slack_a2, _w(pos_priority, pa_priority)))
 
             # Night
-            if req_n > 0:
+            if req_n > 0 and active_map.get('N', True):
                 slack_n = model.NewIntVar(0, req_n, f"slack_{p_idx}_{d}_N")
                 model.Add(sum(pos_day_vars['N'] + pos_day_vars['DN']) + slack_n == req_n)
                 slacks.append((f"{d}|{pos_name}|לילה", slack_n, _w(pos_priority, pn_priority)))
@@ -237,6 +250,16 @@ def solve_roster(employees_df, positions, constraints, col_map, shifts, avail_ov
             # Max 1 shift per day (No Overlap)
             model.Add(sum(day_vars) <= 1)
             
+        # Global Workload Constraint: Max total shifts
+        all_emp_vars = []
+        for (eid, pid, d, s), v in assignments.items():
+            if eid == e['id']:
+                all_emp_vars.append(v)
+        
+        if all_emp_vars:
+            model.Add(sum(all_emp_vars) <= e['max_shifts'])
+
+        for i, d in enumerate(shifts):
             # No Back-to-Back (Night -> Next Morning)
             if constraints['no_back_to_back'] and i < len(shifts) - 1:
                 d_next = shifts[i+1]

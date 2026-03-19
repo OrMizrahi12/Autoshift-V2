@@ -6,6 +6,15 @@ import scheduler
 import uuid  # For unique IDs
 from excel_exporter import generate_styled_excel
 
+# --- Shared Constants ---
+ROW_LABELS = {
+    "morning": "בוקר (07-15)",
+    "afternoon": "צהריים (15-23)",
+    "night": "לילה (23-07)",
+    "double_m": "יכול כפולה בוקר (07-19)",
+    "double_n": "יכול כפולה לילה (19-07)"
+}
+
 st.set_page_config(page_title="AutoShift - שיבוץ משמרות אוטומטי", layout="wide", initial_sidebar_state="expanded")
 
 def load_css():
@@ -149,14 +158,14 @@ if st.session_state.get('employees_df') is not None:
                     st.session_state['positions'].append({
                         "id": str(uuid.uuid4()),  # Stable unique ID is crucial for deletion
                         "name": role,
-                        "type": "24/7",
                         "guards_morning": 1,
                         "guards_afternoon": 1,
                         "guards_night": 1,
                         "priority": 5,
                         "priority_morning": 1,
                         "priority_afternoon": 1,
-                        "priority_night": 1
+                        "priority_night": 1,
+                        "active_shifts": {d: {'M': True, 'A': True, 'N': True} for d in potential_shifts}
                     })
                     new_roles_count += 1
             
@@ -219,9 +228,50 @@ if st.session_state.get('employees_df') is not None:
                     st.session_state['positions'] = new_pos_list
                     st.rerun()
 
-            st.markdown("")
-
             # --- Per-position rows ---
+            with st.expander("➕ הוסף עמדה חדשה", expanded=False):
+                with st.form("add_position_form"):
+                    new_pos_name = st.text_input("שם העמדה*", placeholder="לדוגמה: שער ראשי")
+                    new_pos_prio = st.number_input("עדיפות כללית (1-10)", 1, 10, 5, help="1 = הכי חשוב")
+                    
+                    st.markdown("דרישות איוש (מס' מאבטחים):")
+                    g1, g2, g3 = st.columns(3)
+                    new_g_m = g1.number_input("בוקר (07-15)", 0, 10, 1)
+                    new_g_a = g2.number_input("צהריים (15-23)", 0, 10, 1)
+                    new_g_n = g3.number_input("לילה (23-07)", 0, 10, 1)
+                    
+                    st.markdown("עדיפויות משמרת (1-3):")
+                    p1, p2, p3 = st.columns(3)
+                    new_p_m = p1.number_input("עדיפות בוקר", 1, 3, 1)
+                    new_p_a = p2.number_input("עדיפות צהריים", 1, 3, 1)
+                    new_p_n = p3.number_input("עדיפות לילה", 1, 3, 1)
+                    
+                    submit_new_pos = st.form_submit_button("שמור עמדה חדשה", type="primary", use_container_width=True)
+                    
+                    if submit_new_pos:
+                        if new_pos_name.strip():
+                            # Clear from deleted if it was there
+                            if 'deleted_positions' in st.session_state:
+                                st.session_state['deleted_positions'].discard(new_pos_name.strip())
+                            
+                            st.session_state['positions'].append({
+                                "id": str(uuid.uuid4()),
+                                "name": new_pos_name.strip(),
+                                "guards_morning": new_g_m,
+                                "guards_afternoon": new_g_a,
+                                "guards_night": new_g_n,
+                                "priority": new_pos_prio,
+                                "priority_morning": new_p_m,
+                                "priority_afternoon": new_p_a,
+                                "priority_night": new_p_n,
+                                "active_shifts": {d: {'M': True, 'A': True, 'N': True} for d in potential_shifts}
+                            })
+                            st.success(f"העמדה {new_pos_name} נוספה בהצלחה!")
+                            st.rerun()
+                        else:
+                            st.error("חובה להזין שם עמדה")
+            
+            st.markdown("---")
             # Loop by index is fine for layout, but Keys must use ID
             for idx, pos in enumerate(st.session_state['positions']):
                 pid = pos['id']
@@ -241,38 +291,74 @@ if st.session_state.get('employees_df') is not None:
                         
                 with name_col_ui:
                     with st.expander(f"🏢 {pos['name']} — לחץ לעריכה", expanded=False):
-                        c1, c2 = st.columns(2)
-                        # Keys use pid to remain stable even if list order changes
+                        # 1. Basic Info
+                        c1, c2 = st.columns([3, 2])
                         new_name = c1.text_input("שם העמדה", pos['name'], key=f"p_name_{pid}")
-                        pos_type = c2.selectbox("סוג פעילות", ["24/7", "משמרת בוקר בלבד", "בוקר + ערב"],
-                                             index=["24/7", "משמרת בוקר בלבד", "בוקר + ערב"].index(pos['type']),
-                                             key=f"p_type_{pid}")
+                        pos_priority = c2.number_input(
+                            "עדיפות עמדה (1-10)", 1, 10, pos.get("priority", 5),
+                            key=f"prio_{pid}", help="1 = העמדה הכי חשובה למלא."
+                        )
 
-                        st.markdown("דרישות איוש (מס' מאבטחים):")
+                        # 2. Activity / Schedule Matrix (Manual Grid for stability)
+                        st.markdown("**📅 לו\"ז פעילות (סמן מתי העמדה פעילה)**")
+                        
+                        current_active = pos.get('active_shifts', {})
+                        # Ensure all days/shifts exist
+                        for d in potential_shifts:
+                            if d not in current_active:
+                                current_active[d] = {'M': True, 'A': True, 'N': True}
+                        
+                        new_active_shifts = {}
+                        
+                        # Labels for shifts
+                        shift_names = {"M": "בוקר", "A": "צהריים", "N": "לילה"}
+                        
+                        # Header Row: Days
+                        # Using small padding/columns to fit days
+                        day_cols = st.columns([1.2] + [1] * len(potential_shifts))
+                        day_cols[0].markdown("**משמרת**")
+                        for i, d_label in enumerate(potential_shifts):
+                            day_cols[i+1].markdown(f"**{d_label}**")
+                        
+                        # Data Rows
+                        for s_key, s_label in shift_names.items():
+                            row_cols = st.columns([1.2] + [1] * len(potential_shifts))
+                            row_cols[0].write(s_label)
+                            for i, d_label in enumerate(potential_shifts):
+                                chk_key = f"act_{pid}_{d_label}_{s_key}"
+                                is_active = current_active.get(d_label, {}).get(s_key, True)
+                                
+                                # Checkbox in each cell
+                                val = row_cols[i+1].checkbox(
+                                    "", 
+                                    value=is_active, 
+                                    key=chk_key,
+                                    label_visibility="collapsed"
+                                )
+                                if d_label not in new_active_shifts:
+                                    new_active_shifts[d_label] = {}
+                                new_active_shifts[d_label][s_key] = val
+
+                        st.markdown("דרישות איוש (מס' מאבטחים כשהעמדה פעילה):")
                         g1, g2, g3 = st.columns(3)
                         g_m = g1.number_input("בוקר (07-15)", 0, 10, pos['guards_morning'], key=f"gm_{pid}")
                         g_a = g2.number_input("צהריים (15-23)", 0, 10, pos['guards_afternoon'], key=f"ga_{pid}")
                         g_n = g3.number_input("לילה (23-07)", 0, 10, pos['guards_night'], key=f"gn_{pid}")
 
                         st.markdown("---")
-                        st.markdown("**⭐ עדיפויות לאיוש** (1 = הכי חשוב; השפעה על ה-AI בעת מחסור בכוח אדם)")
-                        prio_col, _, pm_col, pa_col, pn_col = st.columns([2, 0.3, 1.5, 1.5, 1.5])
-                        pos_priority = prio_col.number_input(
-                            "עדיפות עמדה", 1, 10, pos.get("priority", 5),
-                            key=f"prio_{pid}", help="1 = העמדה הכי חשובה למלא."
-                        )
+                        st.markdown("**⭐ עדיפויות משמרת** (1 = חשוב יותר)")
+                        pm_col, pa_col, pn_col = st.columns(3)
                         pm = pm_col.number_input("עדיפות בוקר", 1, 3, pos.get("priority_morning", 1), key=f"pm_{pid}")
                         pa = pa_col.number_input("עדיפות צהריים", 1, 3, pos.get("priority_afternoon", 1), key=f"pa_{pid}")
                         pn = pn_col.number_input("עדיפות לילה", 1, 3, pos.get("priority_night", 1), key=f"pn_{pid}")
                         
-                        # Update state immediately
-                        # Because we have reference to 'pos' which is a dict in the list
+                        # Update state
                         pos.update({
-                            "name": new_name, "type": pos_type,
+                            "name": new_name,
                             "guards_morning": g_m, "guards_afternoon": g_a, "guards_night": g_n,
                             "priority": pos_priority, "priority_morning": pm,
-
-                            "priority_afternoon": pa, "priority_night": pn
+                            "priority_afternoon": pa, "priority_night": pn,
+                            "active_shifts": new_active_shifts
                         })
 
 
@@ -287,14 +373,54 @@ if st.session_state.get('employees_df') is not None:
             no_back_to_back = st.checkbox("איסור משמרות רצופות", value=c['no_back_to_back'])
             min_rest = st.number_input("שעות מנוחה מינימליות", min_value=0, value=c['min_rest'])
             allow_double = st.checkbox("אפשר כפולות (ברירת מחדל לכולם)", value=c['allow_double'])
-            auto_doubles = st.checkbox("אישור כפולות גורף (אם עובד זמין למשמרת, הוא זמין גם לכפולה שלה)", value=c.get('auto_doubles', False), help="אם מסומן: מי שזמין לבוקר יוכל להיות משובץ לכפולה בוקר, ומי שזמין ללילה יוכל להיות משובץ לכפולה לילה - גם אם לא סימן זאת ידנית.")
             
+            if st.button("🪄 אישור כפולות גורף לכל העובדים", use_container_width=True, help="לחיצה על הכפתור תעדכן את כל העובדים שזמינים לבוקר להיות זמינים גם לכפולת בוקר, ומי שזמין ללילה לכפולת לילה."):
+                if 'employees_df' in st.session_state:
+                    df = st.session_state['employees_df']
+                    if 'firebase_constraints_base' not in st.session_state:
+                        st.session_state['firebase_constraints_base'] = {}
+                    
+                    # Logic to update all employees based on current M/N availability
+                    for idx, row in df.iterrows():
+                        # Determine current file-based availability
+                        day_cols = [c for c in df.columns if c in potential_shifts]
+                        
+                        # Get existing override if any, else build from scratch
+                        if str(idx) in st.session_state['firebase_constraints_base']:
+                            emp_df = st.session_state['firebase_constraints_base'][str(idx)].copy()
+                        else:
+                            # Build initial from file
+                            data_dict = {}
+                            for s_col in day_cols:
+                                val = str(row[s_col]).lower()
+                                is_m = 'בוקר' in val or 'morning' in val
+                                is_a = 'צהריים' in val or 'afternoon' in val
+                                is_n = 'לילה' in val or 'night' in val
+                                data_dict[s_col] = [is_m, is_a, is_n, False, False]
+                            emp_df = pd.DataFrame(data_dict, index=[
+                                ROW_LABELS["morning"], ROW_LABELS["afternoon"], ROW_LABELS["night"],
+                                ROW_LABELS["double_m"], ROW_LABELS["double_n"]
+                            ]).reset_index().rename(columns={'index': 'סוג משמרת'})
+
+                        # Apply the update
+                        for col in day_cols:
+                            if col in emp_df.columns:
+                                is_m = emp_df.loc[emp_df['סוג משמרת'] == ROW_LABELS["morning"], col].values[0]
+                                is_n = emp_df.loc[emp_df['סוג משמרת'] == ROW_LABELS["night"], col].values[0]
+                                if is_m: emp_df.loc[emp_df['סוג משמרת'] == ROW_LABELS["double_m"], col] = True
+                                if is_n: emp_df.loc[emp_df['סוג משמרת'] == ROW_LABELS["double_n"], col] = True
+                        
+                        st.session_state['firebase_constraints_base'][str(idx)] = emp_df
+                    
+                    st.success("הכפולות עודכנו לכל העובדים בהצלחה!")
+                    st.rerun()
+
             st.session_state['constraints'] = {
                 "no_overlap": no_overlap,
                 "no_back_to_back": no_back_to_back,
                 "min_rest": min_rest,
                 "allow_double": allow_double,
-                "auto_doubles": auto_doubles
+                "auto_doubles": False # Deprecated persistent toggle
             }
             
             # Column Mapping override
@@ -386,6 +512,7 @@ if st.session_state.get('employees_df') is not None:
                             emp_row = df.loc[ei]
                             st.session_state['excluded_employees'].add(str(emp_row[name_col]))
                             st.session_state.pop(f"emp_chk_{ei}", None)
+                            st.session_state.pop(f"emp_chk_widget_{ei}", None) # Cleanup legacy
                     st.rerun()
 
             st.markdown("")
@@ -418,6 +545,8 @@ if st.session_state.get('employees_df') is not None:
             collected_overrides = {}
             collected_role_updates = {} # Store position capability changes
             collected_pref_weights = {} # Store per-employee position preference weights (0-10)
+            collected_max_shifts = {} # Store per-employee max shifts (default 6)
+            collected_fixed_shifts = {} # Store per-employee fixed assignments (IRON shifts)
 
 
             for idx, row in all_emp_rows:
@@ -426,28 +555,32 @@ if st.session_state.get('employees_df') is not None:
 
                 emp_chk_col, emp_exp_col = st.columns([0.5, 6.5])
                 with emp_chk_col:
-                    st.session_state[f"emp_chk_{idx}"] = st.checkbox(
+                    st.checkbox(
                         label=f"בחר את {emp_name}", 
-                        value=st.session_state.get(f"emp_chk_{idx}", False),
-                        key=f"emp_chk_widget_{idx}",
+                        key=f"emp_chk_{idx}",
                         label_visibility="collapsed"
                     )
                 with emp_exp_col:
                     with st.expander(header_text, expanded=False):
-                        # Show notes at the top if they exist
+                        # Show notes if they exist
                         if note_col and pd.notna(row.get(note_col, None)):
                             note_val = str(row[note_col]).strip()
                             if note_val and note_val.lower() != 'nan':
                                 st.info(f"📝 **הערה:** {note_val}")
 
-                        # Create readable labels for shifts for the index
-                        ROW_LABELS = {
-                            "morning": "בוקר (07-15)",
-                            "afternoon": "צהריים (15-23)",
-                            "night": "לילה (23-07)",
-                            "double_m": "יכול כפולה בוקר (07-19)",
-                            "double_n": "יכול כפולה לילה (19-07)"
-                        }
+                        # --- Workload Settings ---
+                        m_col1, m_col2 = st.columns([2, 5])
+                        max_s = m_col1.number_input(
+                            "מכסת משמרות מקסימלית:",
+                            min_value=1,
+                            max_value=14,
+                            value=6,
+                            key=f"max_s_{idx}",
+                            help="כמה משמרות סה\"כ מותר לשבץ עובד זה בסידור הנוכחי."
+                        )
+                        collected_max_shifts[idx] = max_s
+                        
+                        st.markdown("---")
 
                         # Build initial from file (Always source of truth for structure)
                         data_dict = {}
@@ -458,14 +591,7 @@ if st.session_state.get('employees_df') is not None:
                             is_a = 'צהריים' in val or 'afternoon' in val
                             is_n = 'לילה' in val or 'night' in val
 
-                            can_double_m = False
-                            can_double_n = False
-
-                            if auto_doubles:
-                                if is_m: can_double_m = True
-                                if is_n: can_double_n = True
-
-                            data_dict[day_label] = [is_m, is_a, is_n, can_double_m, can_double_n]
+                            data_dict[day_label] = [is_m, is_a, is_n, False, False]
 
                         df_emp = pd.DataFrame(data_dict, index=[
                             ROW_LABELS["morning"],
@@ -495,17 +621,6 @@ if st.session_state.get('employees_df') is not None:
                             for col in loaded_df.columns:
                                 if col in df_display.columns and col != 'סוג משמרת':
                                     df_display[col] = loaded_df[col]
-
-                        # Re-apply auto_doubles logic AFTER merging the saved state
-                        if auto_doubles:
-                            for col in day_cols:
-                                is_m = df_display.loc[df_display['סוג משמרת'] == ROW_LABELS["morning"], col].values[0]
-                                is_n = df_display.loc[df_display['סוג משמרת'] == ROW_LABELS["night"], col].values[0]
-                                
-                                if is_m:
-                                    df_display.loc[df_display['סוג משמרת'] == ROW_LABELS["double_m"], col] = True
-                                if is_n:
-                                    df_display.loc[df_display['סוג משמרת'] == ROW_LABELS["double_n"], col] = True
 
                         # Config
                         col_config = {
@@ -576,6 +691,42 @@ if st.session_state.get('employees_df') is not None:
                                         emp_prefs[role_name] = score
                                 collected_pref_weights[idx] = emp_prefs
 
+                            # --- Fixed Shifts (Iron Shifts) ---
+                            st.divider()
+                            st.caption("⚓ **משמרות ברזל (שיבוץ קבוע)**")
+                            st.info("השימוש במשמרות ברזל פירושו שהאלגוריתם יחשיב את העובד כמשובץ באופן אוטומטי לעמדה וזמן אלו.")
+                            
+                            fs_key = f"fixed_shifts_list_{idx}"
+                            if fs_key not in st.session_state:
+                                st.session_state[fs_key] = []
+                            
+                            # Display existing fixed shifts
+                            for f_idx, f_shift in enumerate(st.session_state[fs_key]):
+                                fs_c1, fs_c2, fs_c3, fs_c4 = st.columns([1, 1, 1.5, 0.5])
+                                fs_c1.write(f"📅 {f_shift['day']}")
+                                fs_c2.write(f"⏱️ {f_shift['shift']}")
+                                fs_c3.write(f"🏢 {f_shift['pos_name']}")
+                                if fs_c4.button("🗑️", key=f"del_fs_{idx}_{f_idx}"):
+                                    st.session_state[fs_key].pop(f_idx)
+                                    st.rerun()
+                            
+                            # Form to add new fixed shift
+                            with st.popover("➕ הוסף משמרת ברזל"):
+                                afs_c1, afs_c2 = st.columns(2)
+                                f_day = afs_c1.selectbox("יום", options=potential_shifts, key=f"f_d_{idx}")
+                                f_shift_type = afs_c2.selectbox("סוג משמרת", options=["M", "A", "N"], format_func=lambda x: {"M":"בוקר", "A":"צהריים", "N":"לילה"}[x], key=f"f_s_{idx}")
+                                f_pos = st.selectbox("עמדה", options=[p['name'] for p in st.session_state['positions']], key=f"f_p_{idx}")
+                                
+                                if st.button("שמור משמרת ברזל", key=f"btn_fs_{idx}"):
+                                    st.session_state[fs_key].append({
+                                        "day": f_day,
+                                        "shift": f_shift_type,
+                                        "pos_name": f_pos
+                                    })
+                                    st.rerun()
+                            
+                            collected_fixed_shifts[idx] = st.session_state[fs_key]
+
 
         # --- 6. Schedule Action ---
         st.divider()
@@ -598,7 +749,10 @@ if st.session_state.get('employees_df') is not None:
                     shifts_to_use = st.session_state.get('selected_shifts', potential_shifts)
                     col_map_to_use = st.session_state.get('col_map', {"name": name_col, "pos": role_col, "note": None})
                     
-                    df_solver = st.session_state['employees_df'].copy()
+                    # Filter out excluded employees (deleted) before solving
+                    df_all = st.session_state['employees_df']
+                    excluded_names = st.session_state.get('excluded_employees', set())
+                    df_solver = df_all[~df_all[name_col].astype(str).isin(excluded_names)].copy()
                     if role_col and collected_role_updates:
                         for r_idx, r_list in collected_role_updates.items():
                             df_solver.at[r_idx, role_col] = ", ".join(r_list)
@@ -611,6 +765,8 @@ if st.session_state.get('employees_df') is not None:
                         shifts=shifts_to_use,
                         avail_overrides=current_overrides,
                         pref_weights=collected_pref_weights,
+                        max_shifts_map=collected_max_shifts,
+                        fixed_shifts_map=collected_fixed_shifts,
                         calc_potentials=calc_potential_ui
                     )
                     st.session_state['latest_roster_results'] = results

@@ -72,7 +72,7 @@ def save_state_to_firebase(session_state, user_id):
 
     # 2. Merge current user interaction states
     for key in session_state.keys():
-        if key.startswith("roles_sel_") or key.startswith("pref_"):
+        if key.startswith("roles_sel_") or key.startswith("pref_") or key.startswith("max_s_") or key.startswith("fixed_shifts_list_"):
             dynamic_state[key] = session_state[key]
             
     data['dynamic_state_json'] = json.dumps(dynamic_state, default=str)
