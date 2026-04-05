@@ -64,7 +64,7 @@ if st.button("🚀 בצע חיבור נתונים", type="primary"):
                 # --- A. Load Mapping Table ---
                 map_wb = pd.ExcelFile(file_mapping)
                 # Sheet 1: Names [שם מסידור העבודה (Tabit), שם בדוח נוכחות (YLM)]
-                df_map_names = map_wb.parse(0) 
+                df_map_names = map_wb.parse(0)
                 # Sheet 2: Positions [עמדת סידור (Tabit), אתרי נוכחות (YLM)]
                 df_map_pos = map_wb.parse(1) if len(map_wb.sheet_names) > 1 else pd.DataFrame()
 
@@ -85,7 +85,7 @@ if st.button("🚀 בצע חיבור נתונים", type="primary"):
                 # --- B. Load Tabit Data ---
                 df_tabit = pd.read_excel(file_tabit)
                 # Expected: [מקור, שם העובד, תאריך, עמדה, שעת כניסה, שעת יציאה]
-                
+
                 # --- C. Load YLM Data ---
                 df_ylm = pd.read_excel(file_ylm)
                 # Expected: [תאריך, אתר, עובד, כניסה, יציאה, סהכ]
@@ -93,7 +93,7 @@ if st.button("🚀 בצע חיבור נתונים", type="primary"):
                 # 1. Normalize Tabit Names and Positions to YLM language
                 df_tabit['שם_נקי_Tabit'] = df_tabit['שם העובד'].apply(clean_name_generic)
                 df_tabit['תאריך_נורמלי'] = df_tabit['תאריך'].apply(normalize_date)
-                
+
                 # Apply Mapping
                 df_tabit['שם_במערכת_YLM'] = df_tabit['שם_נקי_Tabit'].apply(lambda x: name_map.get(x, x))
                 df_tabit['אתר_במערכת_YLM'] = df_tabit['עמדה'].apply(lambda x: pos_map.get(str(x).strip(), str(x).strip()))
@@ -101,12 +101,12 @@ if st.button("🚀 בצע חיבור נתונים", type="primary"):
                 # 2. Normalize YLM Data
                 df_ylm['שם_נקי_YLM'] = df_ylm['עובד'].apply(clean_name_generic)
                 df_ylm['תאריך_נורמלי'] = df_ylm['תאריך'].apply(normalize_date)
-                
+
                 # 3. Perform the Merge
                 # We merge on Date and standardized YLM Name
                 final_merged = pd.merge(
-                    df_tabit, 
-                    df_ylm, 
+                    df_tabit,
+                    df_ylm,
                     left_on=['תאריך_נורמלי', 'שם_במערכת_YLM'],
                     right_on=['תאריך_נורמלי', 'שם_נקי_YLM'],
                     how='left', # Keep all Tabit records
@@ -135,14 +135,30 @@ if st.button("🚀 בצע חיבור נתונים", type="primary"):
                 elif 'תאריך' not in final_merged.columns and 'תאריך_נוכחות' in final_merged.columns:
                     final_merged = final_merged.rename(columns={'תאריך_נוכחות': 'תאריך'})
 
+                # Calculate YLM Only (Guards in YLM but not in Tabit)
+                tabit_keys = df_tabit[['תאריך_נורמלי', 'שם_במערכת_YLM']].drop_duplicates()
+                ylm_only = pd.merge(
+                    df_ylm,
+                    tabit_keys,
+                    left_on=['תאריך_נורמלי', 'שם_נקי_YLM'],
+                    right_on=['תאריך_נורמלי', 'שם_במערכת_YLM'],
+                    how='left',
+                    indicator=True
+                )
+                ylm_only = ylm_only[ylm_only['_merge'] == 'left_only'].copy()
+                cols_to_drop_ylm = ['_merge', 'שם_במערכת_YLM', 'שם_נקי_YLM', 'תאריך_נורמלי']
+                ylm_only = ylm_only.drop(columns=[c for c in cols_to_drop_ylm if c in ylm_only.columns])
+
                 st.success("✅ החיבור הושלם בהצלחה!")
                 st.dataframe(final_merged, use_container_width=True)
 
                 # Download
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    final_merged.to_excel(writer, index=False)
-                
+                    final_merged.to_excel(writer, sheet_name='Merged Data', index=False)
+                    if not ylm_only.empty:
+                        ylm_only.to_excel(writer, sheet_name='YLM Only', index=False)
+
                 st.download_button(
                     label="📥 הורד טבלה מחוברת (Excel)",
                     data=output.getvalue(),
@@ -172,12 +188,16 @@ merged_file_upload = st.file_uploader("📂 העלה קובץ מאוחד לני�
 if st.button("🚩 נתח פערים והשלם נתונים", type="primary"):
     if merged_file_upload:
         try:
-            df_gaps = pd.read_excel(merged_file_upload)
-            
+            xls = pd.ExcelFile(merged_file_upload)
+            df_gaps = pd.read_excel(xls, sheet_name=0)
+            df_ylm_only = pd.DataFrame()
+            if 'YLM Only' in xls.sheet_names:
+                df_ylm_only = pd.read_excel(xls, sheet_name='YLM Only')
+
             # Check required columns
             required = ['שעת כניסה (Tabit)', 'שעת יציאה (Tabit)', 'כניסה (YLM)', 'יציאה (YLM)']
             missing_cols = [c for c in required if c not in df_gaps.columns]
-            
+
             if missing_cols:
                 st.error(f"הקובץ חסר את העמודות הבאות: {', '.join(missing_cols)}")
             else:
@@ -185,69 +205,81 @@ if st.button("🚩 נתח פערים והשלם נתונים", type="primary"):
                 # A gap is when YLM entry or exit is missing
                 mask_entry_missing = df_gaps['כניסה (YLM)'].isna() | (df_gaps['כניסה (YLM)'].astype(str).str.strip() == '')
                 mask_exit_missing = df_gaps['יציאה (YLM)'].isna() | (df_gaps['יציאה (YLM)'].astype(str).str.strip() == '')
-                
+
                 df_gaps['פער כניסה'] = mask_entry_missing
                 df_gaps['פער יציאה'] = mask_exit_missing
                 df_gaps['יש פער'] = mask_entry_missing | mask_exit_missing
-                
+
                 # 2. Reconcile (Fill Gaps)
                 df_gaps['כניסה (YLM) משלים'] = df_gaps['כניסה (YLM)']
                 df_gaps.loc[mask_entry_missing, 'כניסה (YLM) משלים'] = df_gaps.loc[mask_entry_missing, 'שעת כניסה (Tabit)']
-                
+
                 df_gaps['יציאה (YLM) משלים'] = df_gaps['יציאה (YLM)']
                 df_gaps.loc[mask_exit_missing, 'יציאה (YLM) משלים'] = df_gaps.loc[mask_exit_missing, 'שעת יציאה (Tabit)']
-                
+
                 # Add a status column for visibility
                 def get_status(row):
                     if row['פער כניסה'] and row['פער יציאה']: return "❌ חסר כניסה ויציאה"
                     if row['פער כניסה']: return "⚠️ חסר כניסה"
                     if row['פער יציאה']: return "⚠️ חסר יציאה"
                     return "✅ תקין"
-                
+
                 df_gaps['סטטוס סנכרון'] = df_gaps.apply(get_status, axis=1)
-                
+
                 # Display results
                 st.write(f"### דוח פערים: נמצאו {df_gaps['יש פער'].sum()} שורות עם חוסר סנכרון")
-                
+
                 # Filter to show only gaps if requested
                 show_only_gaps = st.checkbox("הצג רק שורות עם פערים", value=True)
                 display_df = df_gaps[df_gaps['יש פער']] if show_only_gaps else df_gaps
-                
+
                 st.dataframe(display_df.drop(columns=['פער כניסה', 'פער יציאה', 'יש פער']), use_container_width=True)
-                
+
+                if not df_ylm_only.empty:
+                    # Filter out rows where the employee name is missing/None
+                    emp_col = 'עובד' if 'עובד' in df_ylm_only.columns else df_ylm_only.columns[2]
+                    df_ylm_only_display = df_ylm_only[
+                        df_ylm_only[emp_col].notna() &
+                        (df_ylm_only[emp_col].astype(str).str.strip() != '') &
+                        (df_ylm_only[emp_col].astype(str).str.strip().str.lower() != 'none')
+                    ]
+                    if not df_ylm_only_display.empty:
+                        st.write("### עובדים בילמ (YLM) ללא משמרת בסידור (Tabit)")
+                        st.dataframe(df_ylm_only_display, use_container_width=True)
+
                 # 3. Create Colorful Excel (Updated with Separators)
-                def generate_excel_report(df_source, df_full_with_gaps, sheet_name):
+                def generate_excel_report(df_source, df_full_with_gaps, sheet_name, df_ylm_only=None):
                     output = io.BytesIO()
                     # Group by position and then by date for a clean report
                     df_sorted = df_source.sort_values(by=['עמדה בסידור (Tabit)', 'תאריך'])
                     df_to_save = df_sorted.drop(columns=['פער כניסה', 'פער יציאה', 'יש פער'], errors='ignore')
-                    
+
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         # Create sheet manually to have full control
                         workbook = writer.book
                         worksheet = workbook.create_sheet(sheet_name)
                         if 'Sheet' in workbook.sheetnames: del workbook['Sheet'] # Remove default
-                        
+
                         from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
                         header_fill = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')
                         header_font = Font(color='FFFFFF', bold=True)
                         separator_fill = PatternFill(start_color='E9ECEF', end_color='E9ECEF', fill_type='solid') # Soft Grey separator
-                        
+
                         # Status/YLM Gap colors
                         reported_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid') # Green
                         missing_fill = PatternFill(start_color='FABF8F', end_color='FABF8F', fill_type='solid')  # Orange
                         header_gap_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid') # Red status
-                        
+
                         # Position palette (Contrasting)
                         POS_COLORS = ['BDD7EE', 'FCE4D6', 'E2EFDA', 'FFF2CC', 'E1E1E1', 'DDEBF7', 'F8CBAD', 'C6E0B4', 'FFE699', 'DAEEF3']
                         unique_positions = df_to_save['עמדה בסידור (Tabit)'].unique()
-                        pos_color_map = {pos: PatternFill(start_color=POS_COLORS[i % len(POS_COLORS)], 
-                                                        end_color=POS_COLORS[i % len(POS_COLORS)], 
-                                                        fill_type='solid') 
+                        pos_color_map = {pos: PatternFill(start_color=POS_COLORS[i % len(POS_COLORS)],
+                                                        end_color=POS_COLORS[i % len(POS_COLORS)],
+                                                        fill_type='solid')
                                         for i, pos in enumerate(unique_positions)}
-                        
+
                         thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
-                        
+
                         # A. Write Headers
                         for c_idx, col_name in enumerate(df_to_save.columns, start=1):
                             cell = worksheet.cell(row=1, column=c_idx, value=col_name)
@@ -255,21 +287,21 @@ if st.button("🚩 נתח פערים והשלם נתונים", type="primary"):
                             cell.font = header_font
                             cell.alignment = Alignment(horizontal='center', vertical='center')
                             cell.border = thin_border
-                        
+
                         # Map column indices for styling
                         pos_colored_cols = ['שם בסידור (Tabit)', 'תאריך', 'עמדה בסידור (Tabit)', 'שעת כניסה (Tabit)', 'שעת יציאה (Tabit)']
                         pos_col_indices = [df_to_save.columns.get_loc(c) + 1 for c in pos_colored_cols if c in df_to_save.columns]
                         idx_entry_fixed = df_to_save.columns.get_loc('כניסה (YLM) משלים') + 1
                         idx_exit_fixed = df_to_save.columns.get_loc('יציאה (YLM) משלים') + 1
                         idx_status = df_to_save.columns.get_loc('סטטוס סנכרון') + 1
-                        
+
                         # B. Write Rows with Separators
                         curr_excel_row = 2
                         last_pos = None
-                        
+
                         for _, row_data in df_sorted.iterrows():
                             pos = row_data['עמדה בסידור (Tabit)']
-                            
+
                             # Add separator if position changes
                             if pos != last_pos:
                                 worksheet.merge_cells(start_row=curr_excel_row, start_column=1, end_row=curr_excel_row, end_column=len(df_to_save.columns))
@@ -281,7 +313,7 @@ if st.button("🚩 נתח פערים והשלם נתונים", type="primary"):
                                     worksheet.cell(row=curr_excel_row, column=c_idx).border = thin_border
                                 curr_excel_row += 1
                                 last_pos = pos
-                            
+
                             # Write Data Row
                             current_pos_fill = pos_color_map.get(pos)
                             for c_idx, col_name in enumerate(df_to_save.columns, start=1):
@@ -289,23 +321,23 @@ if st.button("🚩 נתח פערים והשלם נתונים", type="primary"):
                                 cell = worksheet.cell(row=curr_excel_row, column=c_idx, value=val)
                                 cell.border = thin_border
                                 cell.alignment = Alignment(horizontal='center')
-                                
+
                                 # Style Tabit Columns
                                 if c_idx in pos_col_indices:
                                     cell.fill = current_pos_fill
-                                
+
                                 # Style YLM Fixed Columns
                                 if c_idx == idx_entry_fixed:
                                     cell.fill = missing_fill if row_data['פער כניסה'] else reported_fill
                                 elif c_idx == idx_exit_fixed:
                                     cell.fill = missing_fill if row_data['פער יציאה'] else reported_fill
-                                
+
                                 # Style Status
                                 elif c_idx == idx_status:
                                     cell.fill = header_gap_fill if row_data['יש פער'] else reported_fill
-                                    
+
                             curr_excel_row += 1
-                        
+
                         # Auto-adjust width
                         for column in worksheet.columns:
                             max_length = 0
@@ -315,10 +347,44 @@ if st.button("🚩 נתח פערים והשלם נתונים", type="primary"):
                                     if cell.value and len(str(cell.value)) > max_length: max_length = len(str(cell.value))
                                 except: pass
                             worksheet.column_dimensions[column_letter].width = max_length + 4
+                        if df_ylm_only is not None and not df_ylm_only.empty:
+                            emp_col_ylm = 'עובד' if 'עובד' in df_ylm_only.columns else df_ylm_only.columns[2]
+                            df_ylm_filtered = df_ylm_only[
+                                df_ylm_only[emp_col_ylm].notna() &
+                                (df_ylm_only[emp_col_ylm].astype(str).str.strip() != '') &
+                                (df_ylm_only[emp_col_ylm].astype(str).str.strip().str.lower() != 'none')
+                            ].copy()
+                            if not df_ylm_filtered.empty:
+                                ws_ylm = workbook.create_sheet('נוכחים בילמ ולא בשיפט')
+                                ylm_header_fill = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')
+                                ylm_row_fill = PatternFill(start_color='DDEBF7', end_color='DDEBF7', fill_type='solid')
+                                # Write header
+                                for c_idx, col_name in enumerate(df_ylm_filtered.columns, start=1):
+                                    cell = ws_ylm.cell(row=1, column=c_idx, value=col_name)
+                                    cell.fill = ylm_header_fill
+                                    cell.font = Font(color='FFFFFF', bold=True)
+                                    cell.alignment = Alignment(horizontal='center', vertical='center')
+                                    cell.border = thin_border
+                                # Write data rows
+                                for r_idx, (_, row_data) in enumerate(df_ylm_filtered.iterrows(), start=2):
+                                    for c_idx, col_name in enumerate(df_ylm_filtered.columns, start=1):
+                                        cell = ws_ylm.cell(row=r_idx, column=c_idx, value=row_data[col_name])
+                                        cell.fill = ylm_row_fill
+                                        cell.alignment = Alignment(horizontal='center')
+                                        cell.border = thin_border
+                                # Auto-adjust width
+                                for column in ws_ylm.columns:
+                                    max_length = 0
+                                    col_letter = column[0].column_letter
+                                    for cell in column:
+                                        try:
+                                            if cell.value and len(str(cell.value)) > max_length: max_length = len(str(cell.value))
+                                        except: pass
+                                    ws_ylm.column_dimensions[col_letter].width = max_length + 4
                     return output.getvalue()
 
-                full_report = generate_excel_report(df_gaps, df_gaps, 'דוח פערים והשלמות')
-                gaps_only_report = generate_excel_report(df_gaps[df_gaps['יש פער']], df_gaps, 'חוסרים בלבד')
+                full_report = generate_excel_report(df_gaps, df_gaps, 'דוח פערים והשלמות', df_ylm_only)
+                gaps_only_report = generate_excel_report(df_gaps[df_gaps['יש פער']], df_gaps, 'חוסרים בלבד', df_ylm_only)
 
                 col_dl1, col_dl2 = st.columns(2)
                 with col_dl1:
@@ -337,7 +403,7 @@ if st.button("🚩 נתח פערים והשלם נתונים", type="primary"):
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True
                     )
-                    
+
         except Exception as e:
             st.error(f"שגיאה בניתוח הפערים: {e}")
     else:
